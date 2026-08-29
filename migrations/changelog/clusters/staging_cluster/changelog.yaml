@@ -1,0 +1,3 @@
+databaseChangeLog:
+  - include:
+      file: changelog/clusters/staging_cluster/staging/changelog.yaml

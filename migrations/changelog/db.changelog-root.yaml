@@ -1,5 +1,32 @@
 databaseChangeLog:
-  - includeAll:
-      path: changelog/changes
-      relativeToChangelogFile: false
-      errorIfMissingOrEmpty: true
+  # ---------------------------------------------------------------------------
+  # Placeholders. Migrations reference these instead of hardcoding names, so the
+  # same file can run against prod and against a personal sandbox.
+  # ---------------------------------------------------------------------------
+  - property: {name: author_name, value: deployer}
+
+  # Set to e.g. "leonid__" on preprod to get private copies of every object.
+  - property: {name: personal_prefix, value: ""}
+
+  # ReplicatedMergeTree ZooKeeper path + replica name. `{shard}` / `{replica}` are
+  # ClickHouse macros (see clickhouse/config.d/02-clusters.xml), not Liquibase ones.
+  - property:
+      name: sharded
+      value: "'/clickhouse/tables/{shard}/{database}/{table}', '{replica}'"
+  - property:
+      name: sharded_uuid
+      value: "'/clickhouse/tables/{shard}/{database}/{uuid}', '{replica}'"
+
+  # Database shorthands: ${analytics}events -> analytics.events
+  - property: {name: analytics_schema, value: analytics}
+  - property: {name: analytics, value: "${analytics_schema}.${personal_prefix}"}
+  - property: {name: staging_schema, value: staging}
+  - property: {name: staging, value: "${staging_schema}.${personal_prefix}"}
+
+  # ---------------------------------------------------------------------------
+  # One include per logical cluster.
+  # ---------------------------------------------------------------------------
+  - include:
+      file: changelog/clusters/analytics_cluster/changelog.yaml
+  - include:
+      file: changelog/clusters/staging_cluster/changelog.yaml

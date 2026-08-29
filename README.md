@@ -10,8 +10,15 @@ Nothing is installed on the host — Liquibase runs from a container.
 
 ```bash
 task image:build   # build the CLI image (stands in for `docker pull`)
-task update        # apply the changelog - starts ClickHouse first
+task lint          # check migrations against the repo conventions
+task update        # apply them - starts ClickHouse first
 task tables        # look at the result
+```
+
+Authoring a change:
+
+```bash
+task new-migration NAME=create_orders CLUSTER=analytics_cluster DB=analytics
 ```
 
 Every task depends on `up`, so ClickHouse is started for you. `task` on its own lists everything;
@@ -24,14 +31,14 @@ Requires [go-task](https://taskfile.dev).
 Created by `clickhouse/initdb/*.sql`, which the ClickHouse entrypoint runs once, on the first start of an empty data
 volume (`task nuke` resets it; it prompts for confirmation, so add `-y` when scripting).
 
-| Object                      | Engine               | Why it's here                                                               |
-| --------------------------- | -------------------- | --------------------------------------------------------------------------- |
-| `analytics.events`          | MergeTree            | Partitioning, TTL, a `CODEC`, `Map`/`Array`/`IPv4`/`LowCardinality` columns |
-| `analytics.users`           | ReplacingMergeTree   | Version column, `Enum8`, `FixedString`                                      |
-| `analytics.events_daily`    | AggregatingMergeTree | `AggregateFunction` state columns                                           |
-| `analytics.events_daily_mv` | MaterializedView     | An object type with no Liquibase equivalent                                 |
-| `analytics.import_audit`    | Log                  | Non-MergeTree engine                                                        |
-| `staging.events_raw`        | MergeTree            | A second database                                                           |
+| Object | Engine | Why it's here |
+| --- | --- | --- |
+| `analytics.events` | ReplicatedMergeTree | Partitioning, TTL, a `CODEC`, `Map`/`Array`/`IPv4`/`LowCardinality` columns |
+| `analytics.users` | ReplicatedReplacingMergeTree | Version column, `Enum8`, `FixedString` |
+| `analytics.events_daily` | ReplicatedAggregatingMergeTree | `AggregateFunction` state columns |
+| `analytics.events_daily_mv` | MaterializedView | An object type with no Liquibase equivalent |
+| `analytics.import_audit` | Log | Non-MergeTree engine, cannot be replicated |
+| `staging.events_raw` | ReplicatedMergeTree | A second database, on the second cluster |
 
 ## Repo split
 
@@ -119,12 +126,72 @@ database and the target database differ.
 Only the table *names* are separately configurable, via `databaseChangeLogTableName` /
 `databaseChangeLogLockTableName` in `liquibase.properties`.
 
+## Migration conventions
+
+Modelled on a production ClickHouse migration repo, with one deliberate change (see
+"rollbacks" below).
+
+```
+migrations/changelog/clusters/<cluster>/<database>/sql/<UTC timestamp>_<name>.sql
+```
+
+**Per-cluster folders.** `clusters/analytics_cluster/` and `clusters/staging_cluster/` are
+*logical* ClickHouse clusters, not separate machines — both are defined in
+`clickhouse/config.d/02-clusters.xml` and point at this one node. That is enough for
+`ON CLUSTER` and `Replicated*MergeTree` to genuinely execute, so the folder split is real
+rather than decorative. A single-node **embedded ClickHouse Keeper** backs the distributed
+DDL queue.
+
+**Timestamp prefixes** (`20260801120000_create_billing_invoices.sql`) give deterministic
+ordering inside a folder. Generated in **UTC**, so ordering does not depend on who ran the
+generator. ⚠️ Ordering is only total *within* a `sql/` folder — across folders it
+follows the `include` order in the changelogs. A production repo of this shape needed a
+dedicated "linearizer" to get global chronological order; that is a real Liquibase
+limitation, not an oversight.
+
+**Formatted SQL, not XML/YAML changesets.** ClickHouse DDL needs `ENGINE`, `ORDER BY`,
+`PARTITION BY` and `ON CLUSTER`, none of which portable change types can express (see
+Findings). The changelogs that *wire files together* are YAML; the changes themselves are
+raw SQL.
+
+**Placeholders** are defined in `changelog/db.changelog-root.yaml`:
+
+| Placeholder | Expands to | Purpose |
+|---|---|---|
+| `${analytics}` / `${staging}` | `analytics.` / `staging.` | database prefix |
+| `${personal_prefix}` | `""` | set to e.g. `leonid__` for a private sandbox copy |
+| `${sharded}` | `'/clickhouse/tables/{shard}/{database}/{table}', '{replica}'` | `Replicated*MergeTree` args |
+| `${author_name}` | `deployer` | changeset author |
+
+`{shard}` / `{replica}` are ClickHouse macros, not Liquibase ones — different substitution
+mechanisms that happen to share brace syntax.
+
+**Every changeset must carry an explicit `--rollback`.** This is the deliberate addition.
+Liquibase cannot invert raw SQL, so a changeset without one fails at rollback time with
+`RollbackImpossibleException: No inverse to liquibase.change.core.RawSQLChange created` —
+and it fails on the *first* such changeset, so there is no partial rollback either. Where a
+change genuinely cannot be undone (`drop table`, `create or replace function` without the
+previous body), write:
+
+```sql
+--rollback empty
+```
+
+which is accepted and executes as a no-op. The point is that every changeset records a
+*decision*, so an irreversible change is distinguishable from an oversight.
+
+`task lint` enforces all of this — filename shape, the `--liquibase formatted sql` header,
+one `--rollback` per changeset, `ON CLUSTER` matching the folder, and `IF [NOT] EXISTS`
+guards on create/drop. It is a Taskfile recipe, not a helper script.
+
 ## Findings so far
 
-**Applying migrations works, as long as you write raw SQL.** All three changesets in `migrations/changelog/changes/`
-applied cleanly, including the two that alter tables Liquibase did not create (`ALTER TABLE ... ADD COLUMN` on `users`,
-`ADD INDEX` on `events`). `rollback-count` reverses them correctly. `status`, `history`, `validate`, `update-sql` and
-`changelog-sync-sql` all behave.
+**Applying migrations works, as long as you write raw SQL.** All four changesets apply
+cleanly across both clusters, including the two that alter tables Liquibase did not create
+(`ALTER TABLE ... ADD COLUMN` on `users`, `ADD INDEX` on `events`), and including
+`ON CLUSTER` DDL creating `Replicated*MergeTree` tables. Rolling all four back removes both
+created tables and re-applying restores them. `status`, `history`, `validate`, `update-sql`
+and `changelog-sync-sql` all behave.
 
 **Portable change types do not work.** `task demo-portable` runs a `<createTable>` and Liquibase emits:
 
@@ -153,6 +220,32 @@ The generated changelog is therefore **not round-trippable** — it cannot recre
 adopting Liquibase on an existing ClickHouse database, the realistic path is to hand-write a baseline changelog and run
 `task sync-baseline` (`changelog-sync`), which marks it applied without executing it.
 
+**The extension's cluster mode is broken.** The extension reads
+`liquibaseClickhouse.conf` for `clusterName` / `tableZooKeeperPathPrefix` /
+`tableReplicaName`; without it, it logs `Cluster settings are not defined. Work in
+single-instance clickhouse mode.` The file exists at `migrations/liquibaseClickhouse.conf`
+but is **deliberately not mounted** — `task demo-cluster-mode` mounts it to show why.
+
+Cluster mode does take effect: the tracking tables come out as
+`ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/databasechangelog', '{replica}')`
+created with `ON CLUSTER 'analytics_cluster'`. But the changelog **lock is then acquired and
+never released**. `release-locks` fails with `Did not update change log lock correctly.`,
+and every later run blocks on `Waiting for changelog lock....` until you clear the row by
+hand:
+
+```sql
+ALTER TABLE analytics.DATABASECHANGELOGLOCK UPDATE LOCKED = 0, LOCKEDBY = null,
+    LOCKGRANTED = null WHERE ID = 1 SETTINGS mutations_sync = 1;
+```
+
+The same statement issued manually works and completes (`system.mutations.is_done = 1`), so
+ClickHouse is not at fault — it is the extension's lock handling under `ON CLUSTER`. Cluster
+DDL is also slow here: the two `CREATE TABLE ... ON CLUSTER` statements took ~60s.
+
+Worth noting the production repo this is modelled on *does* run in cluster mode
+successfully, on Liquibase **4.16** with a different extension build. So this is a
+regression in some newer combination, not an inherent impossibility.
+
 **Locking uses mutations.** `DATABASECHANGELOGLOCK` is acquired with
 `ALTER TABLE ... UPDATE ... SETTINGS mutations_sync = 1`. ClickHouse mutations are not atomic compare-and-swap, so the
 lock is advisory at best — worth keeping in mind before running concurrent deploys against one cluster.
@@ -164,6 +257,8 @@ Taskfile.yml                               task runner - `task` lists all target
 compose.yaml                               ClickHouse + Liquibase CLI container
 clickhouse/initdb/01-existing-schema.sql   the pre-existing schema
 clickhouse/initdb/02-seed-data.sql         seed rows
+clickhouse/config.d/01-keeper.xml          embedded Keeper (needed for ON CLUSTER)
+clickhouse/config.d/02-clusters.xml        two logical clusters on one node
 
 image/                                     <- pretend this is another repo
   Dockerfile                               Liquibase 4.33 + extension + driver
@@ -172,9 +267,13 @@ image/                                     <- pretend this is another repo
 
 migrations/                                <- this repo's payload
   liquibase.properties                     mounted as liquibase.docker.properties
-  changelog/db.changelog-root.yaml
-  changelog/changes/                       changesets applied by `task update`
-  changelog/experiments/                   changelogs that are expected to fail
+  liquibaseClickhouse.conf                 extension cluster settings (NOT mounted; see Findings)
+  changelog/
+    db.changelog-root.yaml                 placeholders + one include per cluster
+    clusters/<cluster>/changelog.yaml      one include per database
+    clusters/<cluster>/<db>/changelog.yaml includeAll over sql/
+    clusters/<cluster>/<db>/sql/*.sql      the migrations themselves
+    experiments/                           changelogs that are expected to fail
   out/                                     generate-changelog output (gitignored)
 ```
 

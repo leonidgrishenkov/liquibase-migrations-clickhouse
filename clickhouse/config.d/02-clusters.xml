@@ -1,0 +1,36 @@
+<clickhouse>
+    <!-- Two *logical* clusters on one physical node. That is the point: "cluster" here
+         means a ClickHouse cluster name you can write `ON CLUSTER <name>` against, not a
+         separate machine. It is what makes the per-cluster migration folders meaningful. -->
+    <remote_servers replace="true">
+        <analytics_cluster>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica>
+                    <host>clickhouse</host>
+                    <port>9000</port>
+                    <user>liquibase</user>
+                    <password>liquibase</password>
+                </replica>
+            </shard>
+        </analytics_cluster>
+
+        <staging_cluster>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica>
+                    <host>clickhouse</host>
+                    <port>9000</port>
+                    <user>liquibase</user>
+                    <password>liquibase</password>
+                </replica>
+            </shard>
+        </staging_cluster>
+    </remote_servers>
+
+    <!-- Substituted into ReplicatedMergeTree ZooKeeper paths. -->
+    <macros>
+        <shard>01</shard>
+        <replica>replica-1</replica>
+    </macros>
+</clickhouse>

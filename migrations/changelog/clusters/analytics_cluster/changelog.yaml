@@ -1,0 +1,4 @@
+databaseChangeLog:
+  # One include per database on this cluster. Order here is the deploy order.
+  - include:
+      file: changelog/clusters/analytics_cluster/analytics/changelog.yaml

@@ -1,0 +1,5 @@
+databaseChangeLog:
+  - includeAll:
+      path: changelog/clusters/staging_cluster/staging/sql
+      relativeToChangelogFile: false
+      errorIfMissingOrEmpty: false

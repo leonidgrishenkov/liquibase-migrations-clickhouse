@@ -69,6 +69,100 @@ tasks:
         "SELECT create_table_query FROM system.tables
          WHERE database='analytics' ORDER BY name FORMAT TSVRaw"
 
+  # --- authoring -------------------------------------------------------------
+  new-migration:
+    desc: "Create a migration (NAME=create_foo CLUSTER=analytics_cluster DB=analytics)"
+    silent: true
+    summary: |
+      Creates migrations/changelog/clusters/<CLUSTER>/<DB>/sql/<timestamp>_<NAME>.sql
+      from a template that already carries the changeset header, the ON CLUSTER clause and
+      a --rollback line. The sql/ folder is picked up by includeAll, so no changelog
+      needs editing.
+
+      Example:
+        task new-migration NAME=create_orders CLUSTER=analytics_cluster DB=analytics
+    vars:
+      CLUSTER: '{{.CLUSTER | default "analytics_cluster"}}'
+      DB: '{{.DB | default "analytics"}}'
+      SLUG: '{{.NAME | default "" | lower | replace " " "_" | replace "-" "_"}}'
+      # UTC, so migration order does not depend on who generated the file.
+      TS:
+        sh: date -u +%Y%m%d%H%M%S
+      DIR: 'migrations/changelog/clusters/{{.CLUSTER}}/{{.DB}}/sql'
+      FILE: 'migrations/changelog/clusters/{{.CLUSTER}}/{{.DB}}/sql/{{.TS}}_{{.SLUG}}.sql'
+    preconditions:
+      - sh: '[ -n "{{.NAME}}" ]'
+        msg: 'NAME is required, e.g. task new-migration NAME=create_orders CLUSTER=analytics_cluster DB=analytics'
+      - sh: 'echo "{{.SLUG}}" | grep -qE "^[a-z0-9_]+$"'
+        msg: 'NAME must be snake_case (letters, digits, underscores) - got "{{.SLUG}}"'
+      - sh: '[ -d "migrations/changelog/clusters/{{.CLUSTER}}" ]'
+        msg: 'Unknown cluster "{{.CLUSTER}}". Existing: analytics_cluster, staging_cluster'
+      - sh: '[ -f "migrations/changelog/clusters/{{.CLUSTER}}/{{.DB}}/changelog.yaml" ]'
+        msg: 'Database "{{.DB}}" has no changelog.yaml under cluster "{{.CLUSTER}}"'
+    cmds:
+      - mkdir -p {{.DIR}}
+      - |
+        cat > {{.FILE}} <<'SQL'
+        --liquibase formatted sql
+
+        --changeset ${author_name}:{{.SLUG}}
+        --comment: TODO describe this change
+        create table if not exists ${{"{"}}{{.DB}}}<table_name> on cluster {{.CLUSTER}}
+        (
+            -- columns here
+        )
+        engine = ReplicatedMergeTree(${sharded})
+        order by (<sort_key>);
+        --rollback drop table if exists ${{"{"}}{{.DB}}}<table_name> on cluster {{.CLUSTER}} sync;
+        SQL
+      - 'echo "created {{.FILE}}"'
+
+  lint:
+    desc: Check every migration against the repo conventions
+    summary: |
+      Enforces what Liquibase itself cannot: timestamped snake_case filenames, the
+      formatted-sql header, an explicit --rollback per changeset (use "--rollback empty"
+      when a change genuinely cannot be undone), ON CLUSTER matching the folder, and
+      IF [NOT] EXISTS guards on create/drop.
+    silent: true
+    cmds:
+      - |
+        fail=0
+        for f in $(find migrations/changelog/clusters -name '*.sql' | sort); do
+          base=$(basename "$f")
+          cluster=$(echo "$f" | cut -d/ -f4)
+          err() { echo "  $f: $1"; fail=1; }
+
+          echo "$base" | grep -qE '^[0-9]{14}_[a-z0-9_]+\.sql$' \
+            || err "filename must be <14-digit timestamp>_<snake_case>.sql"
+
+          head -1 "$f" | grep -qF -- '--liquibase formatted sql' \
+            || err "first line must be '--liquibase formatted sql'"
+
+          cs=$(grep -c -- '--changeset' "$f" || true)
+          rb=$(grep -c -- '--rollback' "$f" || true)
+          [ "$cs" -gt 0 ] || err "contains no changesets"
+          [ "$cs" -eq "$rb" ] \
+            || err "$cs changeset(s) but $rb --rollback line(s); every changeset needs one (use '--rollback empty' if irreversible)"
+
+          if grep -qiE '^[[:space:]]*(create|alter|drop|rename)[[:space:]]' "$f"; then
+            grep -qiE "on cluster ${cluster}" "$f" \
+              || err "DDL must carry 'on cluster ${cluster}' to match its folder"
+          fi
+
+          if grep -inE '^[[:space:]]*create (table|view|materialized view|dictionary)' "$f" \
+             | grep -viE 'if not exists|or replace' | grep -q .; then
+            err "create statements need IF NOT EXISTS"
+          fi
+
+          if grep -inE '^[[:space:]]*drop (table|view|dictionary|function)' "$f" \
+             | grep -viE 'if exists' | grep -q .; then
+            err "drop statements need IF EXISTS"
+          fi
+        done
+        n=$(find migrations/changelog/clusters -name '*.sql' | wc -l | tr -d ' ')
+        if [ "$fail" -eq 0 ]; then echo "ok: $n migration(s) pass"; else echo "FAILED"; exit 1; fi
+
   # --- liquibase ------------------------------------------------------------
   check-image:
     internal: true
@@ -142,6 +236,16 @@ tasks:
     deps: [up, check-image]
     cmds:
       - "{{.LB}} changelog-sync"
+
+  demo-cluster-mode:
+    desc: Run with the extension's cluster settings enabled (known broken - see README)
+    deps: [up, check-image]
+    cmds:
+      - cmd: >-
+          {{.COMPOSE}} run --rm
+          -v "$PWD/migrations/liquibaseClickhouse.conf:/liquibase/lib/liquibaseClickhouse.conf:ro"
+          liquibase update
+        ignore_error: true
 
   demo-portable:
     desc: Run the portable-createTable changelog that ClickHouse rejects
