@@ -1,2 +1,2 @@
-liquibase/out/
+migrations/out/
 .env

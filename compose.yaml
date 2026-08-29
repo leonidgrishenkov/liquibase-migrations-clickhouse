@@ -29,8 +29,10 @@ services:
       start_period: 20s
 
   liquibase:
-    build: ./liquibase
-    image: liquibase-clickhouse:local
+    # Consumed by tag, never built from here - the Dockerfile lives in ./image, which
+    # stands in for a separate repository. `task image:build` produces this tag locally;
+    # in the real split you would `docker pull` it from a registry.
+    image: ${LIQUIBASE_IMAGE:-liquibase-clickhouse:4.33.0-1}
     container_name: liquibase
     depends_on:
       clickhouse:
@@ -41,12 +43,12 @@ services:
       LIQUIBASE_COMMAND_USERNAME: ${CLICKHOUSE_USER:-liquibase}
       LIQUIBASE_COMMAND_PASSWORD: ${CLICKHOUSE_PASSWORD:-liquibase}
     volumes:
-      - ./liquibase/changelog:/liquibase/changelog
+      - ./migrations/changelog:/liquibase/changelog
       # The image entrypoint always injects --defaultsFile=/liquibase/liquibase.docker.properties,
       # so that is the path our config has to land on.
-      - ./liquibase/liquibase.properties:/liquibase/liquibase.docker.properties:ro
+      - ./migrations/liquibase.properties:/liquibase/liquibase.docker.properties:ro
       # generate-changelog / diff-changelog write here
-      - ./liquibase/out:/liquibase/out
+      - ./migrations/out:/liquibase/out
     working_dir: /liquibase
     # One-shot CLI container: `docker compose run --rm liquibase <command>`
     profiles: ["cli"]

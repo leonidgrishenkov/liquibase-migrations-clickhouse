@@ -1,6 +1,18 @@
 version: "3"
 
+# ./image stands in for a separate repository that publishes the CLI image.
+# Nothing here builds it as a side effect - `task image:build` is explicit.
+includes:
+  image:
+    taskfile: ./image/Taskfile.yml
+    dir: ./image
+    vars:
+      IMAGE: "{{.IMAGE_NAME}}"
+      TAG: "{{.IMAGE_TAG}}"
+
 vars:
+  IMAGE_NAME: liquibase-clickhouse
+  IMAGE_TAG: 4.33.0-1
   COMPOSE: docker compose
   LB: docker compose run --rm liquibase
   CH: docker exec clickhouse clickhouse-client --user liquibase --password liquibase
@@ -58,44 +70,47 @@ tasks:
          WHERE database='analytics' ORDER BY name FORMAT TSVRaw"
 
   # --- liquibase ------------------------------------------------------------
-  build:
-    desc: Build the Liquibase image (Liquibase + ClickHouse extension + JDBC driver)
-    cmds:
-      - "{{.COMPOSE}} build liquibase"
+  check-image:
+    internal: true
+    preconditions:
+      - sh: "docker image inspect {{.IMAGE_NAME}}:{{.IMAGE_TAG}} >/dev/null 2>&1"
+        msg: |
+          Image {{.IMAGE_NAME}}:{{.IMAGE_TAG}} not found.
+          It is built from a separate repo (./image here) - run: task image:build
 
   status:
     desc: Show which changesets are pending
-    deps: [up]
+    deps: [up, check-image]
     cmds:
       - "{{.LB}} status"
 
   update:
     desc: Apply pending changesets
-    deps: [up]
+    deps: [up, check-image]
     cmds:
       - "{{.LB}} update"
 
   update-sql:
     desc: Print the SQL `update` would run, without running it
-    deps: [up]
+    deps: [up, check-image]
     cmds:
       - "{{.LB}} update-sql"
 
   history:
     desc: Show applied changesets from DATABASECHANGELOG
-    deps: [up]
+    deps: [up, check-image]
     cmds:
       - "{{.LB}} history"
 
   validate:
     desc: Check the changelog for problems
-    deps: [up]
+    deps: [up, check-image]
     cmds:
       - "{{.LB}} validate"
 
   rollback:
     desc: "Roll back the last changeset (override: task rollback N=3)"
-    deps: [up]
+    deps: [up, check-image]
     vars:
       N: '{{.N | default 1}}'
     cmds:
@@ -103,18 +118,18 @@ tasks:
 
   liquibase:
     desc: Run an arbitrary Liquibase command (task liquibase -- tag v1)
-    deps: [up]
+    deps: [up, check-image]
     cmds:
       - "{{.LB}} {{.CLI_ARGS}}"
 
   # --- the "existing database" experiments ----------------------------------
   generate-changelog:
-    desc: Reverse-engineer the existing schema into liquibase/out/
+    desc: Reverse-engineer the existing schema into migrations/out/
     summary: |
       --diff-types is mandatory: the default snapshot queries
       information_schema.constraints, which ClickHouse does not have.
       See README for how lossy the output is.
-    deps: [up]
+    deps: [up, check-image]
     cmds:
       - >-
         {{.LB}} generate-changelog
@@ -124,13 +139,13 @@ tasks:
 
   sync-baseline:
     desc: Mark every changeset as already applied, without running it
-    deps: [up]
+    deps: [up, check-image]
     cmds:
       - "{{.LB}} changelog-sync"
 
   demo-portable:
     desc: Run the portable-createTable changelog that ClickHouse rejects
-    deps: [up]
+    deps: [up, check-image]
     cmds:
       - cmd: "{{.LB}} update --changelog-file=changelog/experiments/portable-create-table.yaml"
         ignore_error: true

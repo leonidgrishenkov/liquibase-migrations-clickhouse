@@ -9,9 +9,9 @@ Nothing is installed on the host — Liquibase runs from a container.
 ## Quick start
 
 ```bash
-task build     # Liquibase image (only needed once)
-task update    # apply the changelog - starts ClickHouse first
-task tables    # look at the result
+task image:build   # build the CLI image (stands in for `docker pull`)
+task update        # apply the changelog - starts ClickHouse first
+task tables        # look at the result
 ```
 
 Every task depends on `up`, so ClickHouse is started for you. `task` on its own lists everything;
@@ -33,30 +33,32 @@ volume (`task nuke` resets it; it prompts for confirmation, so add `-y` when scr
 | `analytics.import_audit`    | Log                  | Non-MergeTree engine                                                        |
 | `staging.events_raw`        | MergeTree            | A second database                                                           |
 
-## How Liquibase is wired up
+## Repo split
 
-Liquibase has **no first-party ClickHouse support**. The official image ships neither a JDBC driver nor a ClickHouse
-`Database` implementation, and `lpm search clickhouse` returns nothing. `liquibase/Dockerfile` layers three jars into
-`/liquibase/lib`:
+The CLI image and the migrations are deliberately kept apart, as they would be in
+practice:
 
-| Jar                                  | Version        | Note                                                                                                                                           |
-| ------------------------------------ | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `liquibase/liquibase`                | **4.33.0**     | Pinned to 4.x — every published ClickHouse extension is built against Liquibase 4 and does not load under 5.x                                  |
-| `dev.crashteam:liquibase-clickhouse` | 0.8.3          | Community fork; the most recently published of the four on Maven Central (`io.goodforgod`, `io.arenadata`, `com.mediarithmics` are the others) |
-| `com.clickhouse:clickhouse-jdbc`     | 0.7.2 (`-all`) | Last of the v1 driver line, which is what the extension targets                                                                                |
-| `com.typesafe:config`                | 1.4.3          | The extension jar is not shaded and needs this at runtime                                                                                      |
+- **`image/`** — stands in for a **separate repository** that builds and publishes
+  `liquibase-clickhouse:4.33.0-1`. It owns the Liquibase version, the ClickHouse extension
+  and the JDBC driver. See [`image/README.md`](image/README.md) for what is in it, why each
+  version is pinned, and the contract it offers consumers.
+- **`migrations/`** — this repo's actual payload: changelogs and `liquibase.properties`.
+  It consumes the image **by tag** and never rebuilds it.
 
-Three things had to be worked out to get a connection at all — each is commented at the place it matters:
+`compose.yaml` therefore has no `build:` for the Liquibase service — only
+`image: ${LIQUIBASE_IMAGE:-liquibase-clickhouse:4.33.0-1}`. Point `LIQUIBASE_IMAGE` at a
+registry copy (see `.env.example`) and `image/` becomes unnecessary here. Every migration
+task fails fast with an actionable message if the tag is missing locally.
 
-1. **`clickhouse-jdbc:0.6.5-all` is a broken artifact.** It contains the JDBC classes but not `com.clickhouse.client`,
-   so the driver dies in its static initialiser with `NoClassDefFoundError: com/clickhouse/client/ClickHouseClient`.
-   0.7.2's `-all` is fine.
-2. **`?compress=0` is required.** The v1 driver decodes HTTP responses as LZ4 by default; ClickHouse 26.3 replies
-   uncompressed, which surfaces as the very unhelpful `IOException: Magic is not correct - expect [-126] but got [123]`
-   (`123` is `{` — the start of a plain JSON body).
-3. **The image entrypoint always injects `--defaultsFile=/liquibase/liquibase.docker.properties`**, so
-   `liquibase.properties` is mounted onto _that_ path. `changelogFile` is resolved against `searchPath`, never as an
-   absolute path.
+Getting a connection at all required working out three things; all three are part of the
+image's consumer contract and documented in `image/README.md`:
+
+1. **`clickhouse-jdbc:0.6.5-all` is a broken artifact** — missing `com.clickhouse.client`.
+2. **`?compress=0` is required** in the JDBC URL, or every response fails with
+   `IOException: Magic is not correct - expect [-126] but got [123]`.
+3. **The image entrypoint always injects `--defaultsFile=/liquibase/liquibase.docker.properties`**,
+   so `migrations/liquibase.properties` is mounted onto that path. `changelogFile` is
+   resolved against `searchPath`, never as an absolute path.
 
 ### Liquibase's own tables
 
@@ -84,9 +86,42 @@ ENGINE = MergeTree ORDER BY ID;
 
 Note the table names are uppercase and ClickHouse is case-sensitive.
 
+**Choosing which database holds them.** Liquibase's usual knobs for this are
+`liquibaseCatalogName` / `liquibaseSchemaName` (`--liquibase-catalog-name`,
+`--liquibase-schema-name`). ClickHouse has no catalog/schema split — a database is just a
+database — and **both of these knobs hang**. Liquibase accepts the value and logs
+`Creating database changelog table with name: liquibase_meta.DATABASECHANGELOG`, then
+blocks forever in `Creating snapshot`, because setting either one makes it enumerate
+catalogs, which the v1 driver implements as:
+
+```sql
+SELECT concat('jdbc(''', name, ''')') AS TABLE_CAT
+FROM jdbc('...', 'SHOW DATASOURCES') ORDER BY name ASC
+```
+
+That is the ClickHouse **JDBC bridge** table function. With no `clickhouse-jdbc-bridge`
+running, the query never returns and the tracking table is never created. You have to kill
+the container and `KILL QUERY` the stuck statement.
+
+What works instead is **the database in the JDBC URL** — the tracking tables always follow
+the connection's database, and nothing else does:
+
+```
+LIQUIBASE_COMMAND_URL: jdbc:clickhouse://clickhouse:8123/liquibase_meta?compress=0
+```
+
+Verified: this puts `DATABASECHANGELOG`/`DATABASECHANGELOGLOCK` in `liquibase_meta` while
+the changesets still act on `analytics`, because every changeset in this repo writes
+fully-qualified DDL (`analytics.billing_invoices`, not `billing_invoices`). That
+qualification stops being a style preference and becomes mandatory the moment the metadata
+database and the target database differ.
+
+Only the table *names* are separately configurable, via `databaseChangeLogTableName` /
+`databaseChangeLogLockTableName` in `liquibase.properties`.
+
 ## Findings so far
 
-**Applying migrations works, as long as you write raw SQL.** All three changesets in `liquibase/changelog/changes/`
+**Applying migrations works, as long as you write raw SQL.** All three changesets in `migrations/changelog/changes/`
 applied cleanly, including the two that alter tables Liquibase did not create (`ALTER TABLE ... ADD COLUMN` on `users`,
 `ADD INDEX` on `events`). `rollback-count` reverses them correctly. `status`, `history`, `validate`, `update-sql` and
 `changelog-sync-sql` all behave.
@@ -125,16 +160,22 @@ lock is advisory at best — worth keeping in mind before running concurrent dep
 ## Layout
 
 ```
-Taskfile.yml                              task runner - `task` lists all targets
-compose.yaml                              ClickHouse + Liquibase CLI container
-clickhouse/initdb/01-existing-schema.sql  the pre-existing schema
-clickhouse/initdb/02-seed-data.sql        seed rows
-liquibase/Dockerfile                      Liquibase 4.33 + extension + driver
-liquibase/liquibase.properties            mounted as liquibase.docker.properties
-liquibase/changelog/db.changelog-root.yaml
-liquibase/changelog/changes/              changesets applied by `task update`
-liquibase/changelog/experiments/          changelogs that are expected to fail
-liquibase/out/                            generate-changelog output (gitignored)
+Taskfile.yml                               task runner - `task` lists all targets
+compose.yaml                               ClickHouse + Liquibase CLI container
+clickhouse/initdb/01-existing-schema.sql   the pre-existing schema
+clickhouse/initdb/02-seed-data.sql         seed rows
+
+image/                                     <- pretend this is another repo
+  Dockerfile                               Liquibase 4.33 + extension + driver
+  Taskfile.yml                             build / push (stands in for CI)
+  README.md                                versions, pinning rationale, consumer contract
+
+migrations/                                <- this repo's payload
+  liquibase.properties                     mounted as liquibase.docker.properties
+  changelog/db.changelog-root.yaml
+  changelog/changes/                       changesets applied by `task update`
+  changelog/experiments/                   changelogs that are expected to fail
+  out/                                     generate-changelog output (gitignored)
 ```
 
 ## Reusing this for Atlas
