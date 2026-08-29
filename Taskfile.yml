@@ -216,7 +216,7 @@ tasks:
     cmds:
       - "{{.LB}} {{.CLI_ARGS}}"
 
-  # --- the "existing database" experiments ----------------------------------
+  # --- the "existing database" experiments ------------------------------------
   generate-changelog:
     desc: Reverse-engineer the existing schema into migrations/out/
     summary: |
@@ -247,9 +247,3 @@ tasks:
           liquibase update
         ignore_error: true
 
-  demo-portable:
-    desc: Run the portable-createTable changelog that ClickHouse rejects
-    deps: [up, check-image]
-    cmds:
-      - cmd: "{{.LB}} update --changelog-file=changelog/experiments/portable-create-table.yaml"
-        ignore_error: true

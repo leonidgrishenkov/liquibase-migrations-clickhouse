@@ -193,7 +193,18 @@ cleanly across both clusters, including the two that alter tables Liquibase did 
 created tables and re-applying restores them. `status`, `history`, `validate`, `update-sql`
 and `changelog-sync-sql` all behave.
 
-**Portable change types do not work.** `task demo-portable` runs a `<createTable>` and Liquibase emits:
+**Portable change types do not work.** Feeding Liquibase's own `createTable` change type:
+
+```yaml
+- createTable:
+    tableName: feature_flags
+    columns:
+      - column: {name: flag_name, type: String}
+      - column: {name: enabled, type: Bool}
+      - column: {name: updated_at, type: DateTime}
+```
+
+makes it emit:
 
 ```sql
 CREATE TABLE analytics.feature_flags (flag_name STRING, enabled BOOLEAN, updated_at datetime)
@@ -273,7 +284,6 @@ migrations/                                <- this repo's payload
     clusters/<cluster>/changelog.yaml      one include per database
     clusters/<cluster>/<db>/changelog.yaml includeAll over sql/
     clusters/<cluster>/<db>/sql/*.sql      the migrations themselves
-    experiments/                           changelogs that are expected to fail
   out/                                     generate-changelog output (gitignored)
 ```
 
