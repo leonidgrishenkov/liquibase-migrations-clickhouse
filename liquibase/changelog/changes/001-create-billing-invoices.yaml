@@ -1,0 +1,27 @@
+databaseChangeLog:
+  # Raw SQL, because ClickHouse DDL needs ENGINE / ORDER BY / PARTITION BY,
+  # and Liquibase's portable <createTable> has nowhere to put them.
+  - changeSet:
+      id: 001-create-billing-invoices
+      author: leonid
+      comment: New table alongside the pre-existing analytics schema.
+      changes:
+        - sql:
+            splitStatements: false
+            sql: |
+              CREATE TABLE IF NOT EXISTS analytics.billing_invoices
+              (
+                  invoice_id  UUID,
+                  user_id     UInt64,
+                  issued_at   DateTime,
+                  amount      Decimal(18, 4),
+                  currency    LowCardinality(String),
+                  status      Enum8('draft' = 1, 'sent' = 2, 'paid' = 3, 'void' = 4),
+                  updated_at  DateTime DEFAULT now()
+              )
+              ENGINE = ReplacingMergeTree(updated_at)
+              PARTITION BY toYYYYMM(issued_at)
+              ORDER BY (user_id, issued_at, invoice_id)
+      rollback:
+        - sql:
+            sql: DROP TABLE IF EXISTS analytics.billing_invoices

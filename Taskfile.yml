@@ -1,0 +1,136 @@
+version: "3"
+
+vars:
+  COMPOSE: docker compose
+  LB: docker compose run --rm liquibase
+  CH: docker exec clickhouse clickhouse-client --user liquibase --password liquibase
+
+tasks:
+  default:
+    desc: List available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  # --- environment ----------------------------------------------------------
+  up:
+    desc: Start ClickHouse and wait until it is healthy
+    cmds:
+      - "{{.COMPOSE}} up -d --wait clickhouse"
+
+  down:
+    desc: Stop containers, keep the data volume
+    cmds:
+      - "{{.COMPOSE}} down"
+
+  nuke:
+    desc: Stop containers AND drop the data volume (next `up` re-runs initdb)
+    prompt: This deletes the ClickHouse data volume. Continue?
+    cmds:
+      - "{{.COMPOSE}} down -v"
+
+  logs:
+    desc: Tail ClickHouse logs
+    cmds:
+      - "{{.COMPOSE}} logs -f clickhouse"
+
+  ch:
+    desc: Interactive clickhouse-client
+    interactive: true
+    cmds:
+      - docker exec -it clickhouse clickhouse-client --user liquibase --password liquibase
+
+  tables:
+    desc: List tables in the analytics/staging databases
+    cmds:
+      - >-
+        {{.CH}} --query
+        "SELECT database, name, engine FROM system.tables
+         WHERE database IN ('analytics','staging')
+         ORDER BY database, name FORMAT PrettyCompact"
+
+  ddl:
+    desc: Show CREATE statements for every analytics table
+    cmds:
+      - >-
+        {{.CH}} --query
+        "SELECT create_table_query FROM system.tables
+         WHERE database='analytics' ORDER BY name FORMAT TSVRaw"
+
+  # --- liquibase ------------------------------------------------------------
+  build:
+    desc: Build the Liquibase image (Liquibase + ClickHouse extension + JDBC driver)
+    cmds:
+      - "{{.COMPOSE}} build liquibase"
+
+  status:
+    desc: Show which changesets are pending
+    deps: [up]
+    cmds:
+      - "{{.LB}} status"
+
+  update:
+    desc: Apply pending changesets
+    deps: [up]
+    cmds:
+      - "{{.LB}} update"
+
+  update-sql:
+    desc: Print the SQL `update` would run, without running it
+    deps: [up]
+    cmds:
+      - "{{.LB}} update-sql"
+
+  history:
+    desc: Show applied changesets from DATABASECHANGELOG
+    deps: [up]
+    cmds:
+      - "{{.LB}} history"
+
+  validate:
+    desc: Check the changelog for problems
+    deps: [up]
+    cmds:
+      - "{{.LB}} validate"
+
+  rollback:
+    desc: "Roll back the last changeset (override: task rollback N=3)"
+    deps: [up]
+    vars:
+      N: '{{.N | default 1}}'
+    cmds:
+      - "{{.LB}} rollback-count {{.N}}"
+
+  liquibase:
+    desc: Run an arbitrary Liquibase command (task liquibase -- tag v1)
+    deps: [up]
+    cmds:
+      - "{{.LB}} {{.CLI_ARGS}}"
+
+  # --- the "existing database" experiments ----------------------------------
+  generate-changelog:
+    desc: Reverse-engineer the existing schema into liquibase/out/
+    summary: |
+      --diff-types is mandatory: the default snapshot queries
+      information_schema.constraints, which ClickHouse does not have.
+      See README for how lossy the output is.
+    deps: [up]
+    cmds:
+      - >-
+        {{.LB}} generate-changelog
+        --changelog-file=out/generated-schema.yaml
+        --overwrite-output-file=true
+        --diff-types=tables,columns
+
+  sync-baseline:
+    desc: Mark every changeset as already applied, without running it
+    deps: [up]
+    cmds:
+      - "{{.LB}} changelog-sync"
+
+  demo-portable:
+    desc: Run the portable-createTable changelog that ClickHouse rejects
+    deps: [up]
+    cmds:
+      - cmd: "{{.LB}} update --changelog-file=changelog/experiments/portable-create-table.yaml"
+        ignore_error: true

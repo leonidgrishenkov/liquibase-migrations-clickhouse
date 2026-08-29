@@ -1,0 +1,55 @@
+name: liquibase-clickhouse
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3.17.110
+    container_name: clickhouse
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-liquibase}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-liquibase}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-analytics}
+      # Lets the bootstrap user run GRANT/CREATE USER, handy while poking at the instance.
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "8123:8123"   # HTTP  (JDBC talks to this one)
+      - "9000:9000"   # native TCP (clickhouse-client)
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      # *.sql here runs once, on the very first start of an empty data volume.
+      - ./clickhouse/initdb:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "${CLICKHOUSE_USER:-liquibase}", "--password", "${CLICKHOUSE_PASSWORD:-liquibase}", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+
+  liquibase:
+    build: ./liquibase
+    image: liquibase-clickhouse:local
+    container_name: liquibase
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    environment:
+      # Overrides the matching keys in liquibase.properties.
+      LIQUIBASE_COMMAND_URL: jdbc:clickhouse://clickhouse:8123/${CLICKHOUSE_DB:-analytics}?compress=0
+      LIQUIBASE_COMMAND_USERNAME: ${CLICKHOUSE_USER:-liquibase}
+      LIQUIBASE_COMMAND_PASSWORD: ${CLICKHOUSE_PASSWORD:-liquibase}
+    volumes:
+      - ./liquibase/changelog:/liquibase/changelog
+      # The image entrypoint always injects --defaultsFile=/liquibase/liquibase.docker.properties,
+      # so that is the path our config has to land on.
+      - ./liquibase/liquibase.properties:/liquibase/liquibase.docker.properties:ro
+      # generate-changelog / diff-changelog write here
+      - ./liquibase/out:/liquibase/out
+    working_dir: /liquibase
+    # One-shot CLI container: `docker compose run --rm liquibase <command>`
+    profiles: ["cli"]
+
+volumes:
+  clickhouse-data:
