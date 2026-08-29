@@ -9,7 +9,7 @@ Nothing is installed on the host — Liquibase runs from a container.
 ## Quick start
 
 ```bash
-task image:build   # build the CLI image (stands in for `docker pull`)
+docker pull liquibase-clickhouse:4.33.0-1   # or build it from the image repo
 task lint          # check migrations against the repo conventions
 task update        # apply them - starts ClickHouse first
 task tables        # look at the result
@@ -42,23 +42,29 @@ volume (`task nuke` resets it; it prompts for confirmation, so add `-y` when scr
 
 ## Repo split
 
-The CLI image and the migrations are deliberately kept apart, as they would be in
-practice:
+The CLI image lives in its own repository:
+**[`liquibase-clickhouse-image`](https://github.com/leonidgrishenkov/liquibase-clickhouse-image)**.
+It owns the Liquibase version, the ClickHouse extension and the JDBC driver, and publishes
+`liquibase-clickhouse:4.33.0-1`. Its README documents what is in the image, why each
+version is pinned, and the contract it offers consumers.
 
-- **`image/`** — stands in for a **separate repository** that builds and publishes
-  `liquibase-clickhouse:4.33.0-1`. It owns the Liquibase version, the ClickHouse extension
-  and the JDBC driver. See [`image/README.md`](image/README.md) for what is in it, why each
-  version is pinned, and the contract it offers consumers.
-- **`migrations/`** — this repo's actual payload: changelogs and `liquibase.properties`.
-  It consumes the image **by tag** and never rebuilds it.
+**This** repo is only the payload — changelogs and `liquibase.properties` — and consumes
+the image **by tag**. There is deliberately no build task here: `compose.yaml` has no
+`build:` for the Liquibase service, only
+`image: ${LIQUIBASE_IMAGE:-liquibase-clickhouse:4.33.0-1}`. Set `LIQUIBASE_IMAGE` in `.env`
+to use a registry copy (see `.env.example`). Every task that needs the image fails fast
+with an actionable message when the tag is missing locally:
 
-`compose.yaml` therefore has no `build:` for the Liquibase service — only
-`image: ${LIQUIBASE_IMAGE:-liquibase-clickhouse:4.33.0-1}`. Point `LIQUIBASE_IMAGE` at a
-registry copy (see `.env.example`) and `image/` becomes unnecessary here. Every migration
-task fails fast with an actionable message if the tag is missing locally.
+```
+$ task status
+task: Image liquibase-clickhouse:4.33.0-1 not found locally.
+It is built by the liquibase-clickhouse-image repo. Either:
+  docker pull liquibase-clickhouse:4.33.0-1
+  or, in a checkout of that repo:  task build
+```
 
 Getting a connection at all required working out three things; all three are part of the
-image's consumer contract and documented in `image/README.md`:
+image's consumer contract and documented in that repo's README:
 
 1. **`clickhouse-jdbc:0.6.5-all` is a broken artifact** — missing `com.clickhouse.client`.
 2. **`?compress=0` is required** in the JDBC URL, or every response fails with
@@ -271,12 +277,7 @@ clickhouse/initdb/02-seed-data.sql         seed rows
 clickhouse/config.d/01-keeper.xml          embedded Keeper (needed for ON CLUSTER)
 clickhouse/config.d/02-clusters.xml        two logical clusters on one node
 
-image/                                     <- pretend this is another repo
-  Dockerfile                               Liquibase 4.33 + extension + driver
-  Taskfile.yml                             build / push (stands in for CI)
-  README.md                                versions, pinning rationale, consumer contract
-
-migrations/                                <- this repo's payload
+migrations/
   liquibase.properties                     mounted as liquibase.docker.properties
   liquibaseClickhouse.conf                 extension cluster settings (NOT mounted; see Findings)
   changelog/

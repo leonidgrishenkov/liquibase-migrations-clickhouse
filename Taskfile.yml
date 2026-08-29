@@ -1,15 +1,8 @@
 version: "3"
 
-# ./image stands in for a separate repository that publishes the CLI image.
-# Nothing here builds it as a side effect - `task image:build` is explicit.
-includes:
-  image:
-    taskfile: ./image/Taskfile.yml
-    dir: ./image
-    vars:
-      IMAGE: "{{.IMAGE_NAME}}"
-      TAG: "{{.IMAGE_TAG}}"
-
+# The CLI image is built and published by a separate repository:
+#   https://github.com/leonidgrishenkov/liquibase-clickhouse-image
+# This repo only ever consumes it by tag - there is no build task here on purpose.
 vars:
   IMAGE_NAME: liquibase-clickhouse
   IMAGE_TAG: 4.33.0-1
@@ -169,8 +162,11 @@ tasks:
     preconditions:
       - sh: "docker image inspect {{.IMAGE_NAME}}:{{.IMAGE_TAG}} >/dev/null 2>&1"
         msg: |
-          Image {{.IMAGE_NAME}}:{{.IMAGE_TAG}} not found.
-          It is built from a separate repo (./image here) - run: task image:build
+          Image {{.IMAGE_NAME}}:{{.IMAGE_TAG}} not found locally.
+          It is built by the liquibase-clickhouse-image repo. Either:
+            docker pull {{.IMAGE_NAME}}:{{.IMAGE_TAG}}
+            or, in a checkout of that repo:  task build
+          To use a registry copy instead, set LIQUIBASE_IMAGE in .env (see .env.example).
 
   status:
     desc: Show which changesets are pending
