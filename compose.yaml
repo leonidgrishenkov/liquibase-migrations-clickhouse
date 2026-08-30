@@ -7,7 +7,6 @@ services:
     environment:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-liquibase}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-liquibase}
-      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-analytics}
       # Lets the bootstrap user run GRANT/CREATE USER, handy while poking at the instance.
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
     ports:

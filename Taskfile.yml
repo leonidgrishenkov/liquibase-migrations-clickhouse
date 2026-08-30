@@ -57,18 +57,18 @@ tasks:
       - docker exec -it clickhouse clickhouse-client --user liquibase --password liquibase
 
   tables:
-    desc: List tables in the analytics/staging databases
+    desc: List tables in every migrated database
     cmds:
       - >-
         {{.CH}} --query
         "SELECT database, name, engine FROM system.tables
-         WHERE database IN ('analytics','staging')
+         WHERE database IN ('bi','marts','stage','staging')
          ORDER BY database, name FORMAT PrettyCompact"
 
   ddl:
-    desc: Show CREATE statements for every analytics table
+    desc: Show CREATE statements for every migrated table
     cmds:
       - >-
         {{.CH}} --query
         "SELECT create_table_query FROM system.tables
-         WHERE database='analytics' ORDER BY name FORMAT TSVRaw"
+         WHERE database IN ('bi','marts','stage','staging') ORDER BY database, name FORMAT TSVRaw"

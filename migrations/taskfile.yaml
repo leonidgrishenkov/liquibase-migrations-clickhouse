@@ -87,7 +87,7 @@ tasks:
 
   # --- authoring -------------------------------------------------------------
   new:
-    desc: "Create a migration (NAME=create_foo CLUSTER=analytics_cluster DB=analytics)"
+    desc: "Create a migration (NAME=create_foo CLUSTER=analytics_cluster DB=stage)"
     silent: true
     summary: |
       Creates migrations/changelog/clusters/<CLUSTER>/<DB>/sql/<timestamp>_<NAME>.sql
@@ -95,10 +95,10 @@ tasks:
       The sql/ folder is picked up by includeAll, so no changelog needs editing.
 
       Example:
-        task migrations:new NAME=create_orders CLUSTER=analytics_cluster DB=analytics
+        task migrations:new NAME=create_orders CLUSTER=analytics_cluster DB=stage
     vars:
       CLUSTER: '{{.CLUSTER | default "analytics_cluster"}}'
-      DB: '{{.DB | default "analytics"}}'
+      DB: '{{.DB | default "stage"}}'
       SLUG: '{{.NAME | default "" | lower | replace " " "_" | replace "-" "_"}}'
       # UTC, so migration order does not depend on who generated the file.
       TS:
@@ -107,7 +107,7 @@ tasks:
       FILE: 'migrations/changelog/clusters/{{.CLUSTER}}/{{.DB}}/sql/{{.TS}}_{{.SLUG}}.sql'
     preconditions:
       - sh: '[ -n "{{.NAME}}" ]'
-        msg: 'NAME is required, e.g. task migrations:new NAME=create_orders CLUSTER=analytics_cluster DB=analytics'
+        msg: 'NAME is required, e.g. task migrations:new NAME=create_orders CLUSTER=analytics_cluster DB=stage'
       - sh: 'echo "{{.SLUG}}" | grep -qE "^[a-z0-9_]+$"'
         msg: 'NAME must be snake_case (letters, digits, underscores) - got "{{.SLUG}}"'
       - sh: '[ -d "migrations/changelog/clusters/{{.CLUSTER}}" ]'

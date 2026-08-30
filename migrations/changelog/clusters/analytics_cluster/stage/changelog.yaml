@@ -1,5 +1,5 @@
 databaseChangeLog:
   - includeAll:
-      path: changelog/clusters/analytics_cluster/analytics/sql
+      path: changelog/clusters/analytics_cluster/stage/sql
       relativeToChangelogFile: false
       errorIfMissingOrEmpty: false

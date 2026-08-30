@@ -18,8 +18,15 @@ databaseChangeLog:
       value: "'/clickhouse/tables/{shard}/{database}/{uuid}', '{replica}'"
 
   # Database shorthands: ${analytics}events -> analytics.events
-  - property: {name: analytics_schema, value: analytics}
-  - property: {name: analytics, value: "${analytics_schema}.${personal_prefix}"}
+  # analytics_cluster
+  - property: {name: stage_schema, value: stage}
+  - property: {name: stage, value: "${stage_schema}.${personal_prefix}"}
+  - property: {name: bi_schema, value: bi}
+  - property: {name: bi, value: "${bi_schema}.${personal_prefix}"}
+  - property: {name: marts_schema, value: marts}
+  - property: {name: marts, value: "${marts_schema}.${personal_prefix}"}
+  # staging_cluster. Note `staging` (a database on staging_cluster) is a different
+  # thing from `stage` (a database on analytics_cluster).
   - property: {name: staging_schema, value: staging}
   - property: {name: staging, value: "${staging_schema}.${personal_prefix}"}
 

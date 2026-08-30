@@ -1,4 +1,10 @@
 databaseChangeLog:
   # One include per database on this cluster. Order here is the deploy order.
+  # The databases themselves are created by clickhouse/initdb/00-databases.sql -
+  # Liquibase creates tables, never databases.
   - include:
-      file: changelog/clusters/analytics_cluster/analytics/changelog.yaml
+      file: changelog/clusters/analytics_cluster/stage/changelog.yaml
+  - include:
+      file: changelog/clusters/analytics_cluster/bi/changelog.yaml
+  - include:
+      file: changelog/clusters/analytics_cluster/marts/changelog.yaml
