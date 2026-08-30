@@ -99,7 +99,7 @@ tasks:
         --liquibase formatted sql
 
         --changeset ${author_name}:{{.SLUG}}
-        --comment: TODO describe this change
+        --comment: TODO: describe this change
         create table if not exists ${{"{"}}{{.DB}}}<table_name> on cluster {{.CLUSTER}}
         (
             -- columns here

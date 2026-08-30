@@ -45,7 +45,7 @@ services:
     # Consumed by tag, never built from here - the Dockerfile lives in ./image, which
     # stands in for a separate repository. `task image:build` produces this tag locally;
     # in the real split you would `docker pull` it from a registry.
-    image: ${LIQUIBASE_IMAGE:-liquibase-clickhouse:4.33.0-1}
+    image: public.ecr.aws/a8c0b5z6/liquibase-clickhouse:4.33.0-1
     container_name: liquibase
     depends_on:
       clickhouse:
