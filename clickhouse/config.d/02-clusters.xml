@@ -28,9 +28,21 @@
         </staging_cluster>
     </remote_servers>
 
-    <!-- Substituted into ReplicatedMergeTree ZooKeeper paths. -->
+    <!-- Substituted into ReplicatedMergeTree ZooKeeper paths.
+         Two sets, because there are two ways to replicate a table:
+
+         sharded   - each shard owns its own ZK path, so every shard holds a different
+                     slice of the data. {replica} need only be unique within its shard.
+         broadcast - every shard shares ONE ZK path, so the whole cluster holds the same
+                     copy of the table. That makes {replica_broadcast} have to be unique
+                     across the entire cluster, not just within a shard.
+
+         On this single node the two are indistinguishable in effect; they differ in the
+         ZK path they produce, which is what matters on a real cluster. -->
     <macros>
         <shard>01</shard>
         <replica>replica-1</replica>
+        <shard_broadcast>broadcast</shard_broadcast>
+        <replica_broadcast>clickhouse-01</replica_broadcast>
     </macros>
 </clickhouse>
