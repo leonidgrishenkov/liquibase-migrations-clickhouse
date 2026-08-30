@@ -7,13 +7,16 @@ version: "3"
 # The include sets no `dir:`, so these recipes still run from the repo root, where
 # compose.yaml lives and the paths below resolve. COMPOSE / IMAGE_NAME / IMAGE_TAG are
 # passed in by the root Taskfile.
-
-vars:
-  LB: "{{.COMPOSE}} run --rm liquibase"
+#
+# Every Liquibase recipe delegates to the internal `lb` task rather than repeating a
+# `deps:` line. ClickHouse needs no dep at all: compose.yaml declares
+# `depends_on: clickhouse: {condition: service_healthy}` on the liquibase service, so
+# `docker compose run` starts it and blocks until healthy by itself.
 
 tasks:
   check-image:
     internal: true
+    run: once
     preconditions:
       - sh: "docker image inspect {{.IMAGE_NAME}}:{{.IMAGE_TAG}} >/dev/null 2>&1"
         msg: |
@@ -23,52 +26,41 @@ tasks:
             or, in a checkout of that repo:  task publish / task build
           To use a registry copy instead, set LIQUIBASE_IMAGE in .env (see .env.example).
 
+  lb:
+    internal: true
+    # The single place the image guard and the container invocation are declared.
+    deps: [check-image]
+    cmds:
+      - "{{.COMPOSE}} run --rm liquibase {{.ARGS}}"
+
   # --- liquibase commands ----------------------------------------------------
   status:
     desc: Show which changesets are pending
-    deps: [":up", check-image]
-    cmds:
-      - "{{.LB}} status"
+    cmds: [{ task: lb, vars: { ARGS: status } }]
 
   update:
     desc: Apply pending changesets
-    deps: [":up", check-image]
-    cmds:
-      - "{{.LB}} update"
+    cmds: [{ task: lb, vars: { ARGS: update } }]
 
   update-sql:
     desc: Print the SQL `update` would run, without running it
-    deps: [":up", check-image]
-    cmds:
-      - "{{.LB}} update-sql"
+    cmds: [{ task: lb, vars: { ARGS: update-sql } }]
 
   history:
     desc: Show applied changesets from DATABASECHANGELOG
-    deps: [":up", check-image]
-    cmds:
-      - "{{.LB}} history"
+    cmds: [{ task: lb, vars: { ARGS: history } }]
 
   validate:
     desc: Check the changelog for problems
-    deps: [":up", check-image]
-    cmds:
-      - "{{.LB}} validate"
+    cmds: [{ task: lb, vars: { ARGS: validate } }]
 
   rollback-count:
     desc: "Roll back the last N changesets (default 1: task migrations:rollback-count N=3)"
-    deps: [":up", check-image]
-    vars:
-      N: '{{.N | default 1}}'
-    cmds:
-      - "{{.LB}} rollback-count {{.N}}"
+    cmds: [{ task: lb, vars: { ARGS: "rollback-count {{.N | default 1}}" } }]
 
   rollback-count-sql:
     desc: "Print the rollback SQL without running it (N=3)"
-    deps: [":up", check-image]
-    vars:
-      N: '{{.N | default 1}}'
-    cmds:
-      - "{{.LB}} rollback-count-sql --count={{.N}}"
+    cmds: [{ task: lb, vars: { ARGS: "rollback-count-sql --count={{.N | default 1}}" } }]
 
   generate-changelog:
     desc: Reverse-engineer the existing schema into migrations/out/
@@ -76,25 +68,22 @@ tasks:
       --diff-types is mandatory: the default snapshot queries
       information_schema.constraints, which ClickHouse does not have.
       See README for how lossy the output is.
-    deps: [":up", check-image]
     cmds:
-      - >-
-        {{.LB}} generate-changelog
-        --changelog-file=out/generated-schema.yaml
-        --overwrite-output-file=true
-        --diff-types=tables,columns
+      - task: lb
+        vars:
+          ARGS: >-
+            generate-changelog
+            --changelog-file=out/generated-schema.yaml
+            --overwrite-output-file=true
+            --diff-types=tables,columns
 
   changelog-sync:
     desc: Mark every changeset as already applied, without running it
-    deps: [":up", check-image]
-    cmds:
-      - "{{.LB}} changelog-sync"
+    cmds: [{ task: lb, vars: { ARGS: changelog-sync } }]
 
   liquibase:
     desc: "Escape hatch for any other Liquibase command (task migrations:liquibase -- tag v1)"
-    deps: [":up", check-image]
-    cmds:
-      - "{{.LB}} {{.CLI_ARGS}}"
+    cmds: [{ task: lb, vars: { ARGS: "{{.CLI_ARGS}}" } }]
 
   # --- authoring -------------------------------------------------------------
   new:
@@ -135,7 +124,7 @@ tasks:
         --comment: TODO: describe this change
         --TODO: write you changes here
 
-        --rollback
+        --rollback TODO: write a rollback script here
         SQL
       - 'echo "created new migration: {{.FILE}}"'
 
@@ -187,7 +176,8 @@ tasks:
 
   demo-cluster-mode:
     desc: Run with the extension's cluster settings enabled (known broken - see README)
-    deps: [":up", check-image]
+    # Not via `lb`: it needs an extra volume mount.
+    deps: [check-image]
     cmds:
       - cmd: >-
           {{.COMPOSE}} run --rm
