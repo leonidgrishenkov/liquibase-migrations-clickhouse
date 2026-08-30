@@ -51,8 +51,10 @@ services:
       clickhouse:
         condition: service_healthy
     environment:
-      # Overrides the matching keys in liquibase.properties.
-      LIQUIBASE_COMMAND_URL: jdbc:clickhouse://clickhouse:8123/${CLICKHOUSE_DB:-analytics}?compress=0
+      # Credentials only. Environment variables outrank the defaults file in Liquibase's
+      # precedence order, so anything set here silently wins over liquibase.properties -
+      # keep that to values that must not be committed. The JDBC URL deliberately lives
+      # in migrations/liquibase.properties instead, where it is reviewable in git.
       LIQUIBASE_COMMAND_USERNAME: ${CLICKHOUSE_USER:-liquibase}
       LIQUIBASE_COMMAND_PASSWORD: ${CLICKHOUSE_PASSWORD:-liquibase}
     volumes:

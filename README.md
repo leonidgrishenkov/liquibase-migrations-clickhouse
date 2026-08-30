@@ -77,7 +77,7 @@ image's consumer contract and documented in that repo's README:
 
 ### Liquibase's own tables
 
-The extension creates them on first use, in the database named in the JDBC URL — no manual setup needed. Both come out
+The extension creates them on first use, in the database named in the JDBC URL. Both come out
 as plain `MergeTree ORDER BY ID`:
 
 ```sql
@@ -119,17 +119,37 @@ running, the query never returns and the tracking table is never created. You ha
 the container and `KILL QUERY` the stuck statement.
 
 What works instead is **the database in the JDBC URL** — the tracking tables always follow
-the connection's database, and nothing else does:
+the connection's database, and nothing else moves them. That is what this repo does: the
+URL points at a dedicated `liquibase` database, so metadata is kept out of the schemas the
+migrations act on.
 
 ```
-LIQUIBASE_COMMAND_URL: jdbc:clickhouse://clickhouse:8123/liquibase_meta?compress=0
+# migrations/liquibase.properties
+url: jdbc:clickhouse://clickhouse:8123/liquibase?compress=0
 ```
 
-Verified: this puts `DATABASECHANGELOG`/`DATABASECHANGELOGLOCK` in `liquibase_meta` while
-the changesets still act on `analytics`, because every changeset in this repo writes
-fully-qualified DDL (`analytics.billing_invoices`, not `billing_invoices`). That
-qualification stops being a style preference and becomes mandatory the moment the metadata
-database and the target database differ.
+Two things this depends on:
+
+- **The database must already exist.** Liquibase creates the tracking *tables* but never
+  the database. `clickhouse/initdb/00-liquibase-metadata.sql` creates it; keep that file
+  and the URL in sync.
+- **Every changeset must write fully-qualified DDL** (`${analytics_schema}.users`, never a
+  bare `users`). Unqualified names would resolve against the connection database and land
+  in `liquibase`. That stops being a style preference the moment the metadata database and
+  the target database differ.
+
+The URL lives in `liquibase.properties` rather than `compose.yaml` on purpose: it carries
+no secrets, so it is reviewable in git. Only `LIQUIBASE_COMMAND_USERNAME` /
+`LIQUIBASE_COMMAND_PASSWORD` are set in compose. Mind the precedence — **environment
+variables outrank the defaults file**, so anything added to the compose `environment:`
+block silently wins over `liquibase.properties`. Liquibase says so itself at
+`--log-level=FINE`:
+
+```
+Found 'liquibase.command.url' configuration of 'jdbc:clickhouse://clickhouse:8123/liquibase?compress=0'
+    environment variable 'LIQUIBASE_COMMAND_URL' of '*****'
+    Overrides file exists at path /liquibase/liquibase.docker.properties 'url' of '*****'
+```
 
 Only the table *names* are separately configurable, via `databaseChangeLogTableName` /
 `databaseChangeLogLockTableName` in `liquibase.properties`.
@@ -274,6 +294,7 @@ lock is advisory at best — worth keeping in mind before running concurrent dep
 ```
 Taskfile.yml                               environment recipes; includes the one below
 compose.yaml                               ClickHouse + Liquibase CLI container
+clickhouse/initdb/00-liquibase-metadata.sql  creates the `liquibase` metadata database
 clickhouse/initdb/01-existing-schema.sql   the pre-existing schema
 clickhouse/initdb/02-seed-data.sql         seed rows
 clickhouse/config.d/01-keeper.xml          embedded Keeper (needed for ON CLUSTER)
