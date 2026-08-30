@@ -10,19 +10,21 @@ Nothing is installed on the host — Liquibase runs from a container.
 
 ```bash
 docker pull liquibase-clickhouse:4.33.0-1   # or build it from the image repo
-task lint          # check migrations against the repo conventions
-task update        # apply them - starts ClickHouse first
-task tables        # look at the result
+task migrations:lint      # check migrations against the repo conventions
+task migrations:update    # apply them - starts ClickHouse first
+task tables               # look at the result
 ```
 
 Authoring a change:
 
 ```bash
-task new-migration NAME=create_orders CLUSTER=analytics_cluster DB=analytics
+task migrations:new NAME=create_orders CLUSTER=analytics_cluster DB=analytics
 ```
 
-Every task depends on `up`, so ClickHouse is started for you. `task` on its own lists everything;
-`task liquibase -- <args>` runs an arbitrary Liquibase command.
+Liquibase recipes live in `migrations/taskfile.yaml` and are namespaced `migrations:*`;
+environment recipes (`up`, `down`, `nuke`, `tables`, `ch`) stay at the root. Every
+`migrations:*` task depends on `up`, so ClickHouse is started for you. `task` on its own lists everything;
+`task migrations:liquibase -- <args>` runs any other Liquibase command.
 
 Requires [go-task](https://taskfile.dev).
 
@@ -56,7 +58,7 @@ to use a registry copy (see `.env.example`). Every task that needs the image fai
 with an actionable message when the tag is missing locally:
 
 ```
-$ task status
+$ task migrations:status
 task: Image liquibase-clickhouse:4.33.0-1 not found locally.
 It is built by the liquibase-clickhouse-image repo. Either:
   docker pull liquibase-clickhouse:4.33.0-1
@@ -186,7 +188,7 @@ previous body), write:
 which is accepted and executes as a no-op. The point is that every changeset records a
 *decision*, so an irreversible change is distinguishable from an oversight.
 
-`task lint` enforces all of this — filename shape, the `--liquibase formatted sql` header,
+`task migrations:lint` enforces all of this — filename shape, the `--liquibase formatted sql` header,
 one `--rollback` per changeset, `ON CLUSTER` matching the folder, and `IF [NOT] EXISTS`
 guards on create/drop. It is a Taskfile recipe, not a helper script.
 
@@ -223,7 +225,7 @@ only usable change type here, which gives up Liquibase's database portability en
 **`generate-changelog` needs a workaround and is lossy anyway.** By default it fails: Liquibase's snapshot queries
 `information_schema.constraints`, which ClickHouse does not implement
 (`Code: 60 ... Unknown table expression identifier`). Restricting it with `--diff-types=tables,columns` (what
-`task generate-changelog` does) produces output, but:
+`task migrations:generate-changelog` does) produces output, but:
 
 - **Every engine detail is gone** — no `ENGINE`, `ORDER BY`, `PARTITION BY`, `TTL`, codecs or `SETTINGS` anywhere in the
   file.
@@ -235,13 +237,13 @@ only usable change type here, which gives up Liquibase's database portability en
 
 The generated changelog is therefore **not round-trippable** — it cannot recreate the schema it was generated from. For
 adopting Liquibase on an existing ClickHouse database, the realistic path is to hand-write a baseline changelog and run
-`task sync-baseline` (`changelog-sync`), which marks it applied without executing it.
+`task migrations:changelog-sync`, which marks it applied without executing it.
 
 **The extension's cluster mode is broken.** The extension reads
 `liquibaseClickhouse.conf` for `clusterName` / `tableZooKeeperPathPrefix` /
 `tableReplicaName`; without it, it logs `Cluster settings are not defined. Work in
 single-instance clickhouse mode.` The file exists at `migrations/liquibaseClickhouse.conf`
-but is **deliberately not mounted** — `task demo-cluster-mode` mounts it to show why.
+but is **deliberately not mounted** — `task migrations:demo-cluster-mode` mounts it to show why.
 
 Cluster mode does take effect: the tracking tables come out as
 `ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/databasechangelog', '{replica}')`
@@ -270,7 +272,7 @@ lock is advisory at best — worth keeping in mind before running concurrent dep
 ## Layout
 
 ```
-Taskfile.yml                               task runner - `task` lists all targets
+Taskfile.yml                               environment recipes; includes the one below
 compose.yaml                               ClickHouse + Liquibase CLI container
 clickhouse/initdb/01-existing-schema.sql   the pre-existing schema
 clickhouse/initdb/02-seed-data.sql         seed rows
@@ -278,6 +280,7 @@ clickhouse/config.d/01-keeper.xml          embedded Keeper (needed for ON CLUSTE
 clickhouse/config.d/02-clusters.xml        two logical clusters on one node
 
 migrations/
+  taskfile.yaml                            all `task migrations:*` recipes
   liquibase.properties                     mounted as liquibase.docker.properties
   liquibaseClickhouse.conf                 extension cluster settings (NOT mounted; see Findings)
   changelog/

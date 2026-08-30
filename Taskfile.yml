@@ -1,5 +1,17 @@
 version: "3"
 
+# Liquibase/migration recipes live next to the migrations they operate on, in
+# ./migrations/taskfile.yaml, and are exposed here under the `migrations:` namespace.
+# No `dir:` on purpose - the included recipes still run from the repo root, where
+# compose.yaml lives and their paths resolve.
+includes:
+  migrations:
+    taskfile: ./migrations/taskfile.yaml
+    vars:
+      COMPOSE: "{{.COMPOSE}}"
+      IMAGE_NAME: "{{.IMAGE_NAME}}"
+      IMAGE_TAG: "{{.IMAGE_TAG}}"
+
 # The CLI image is built and published by a separate repository:
 #   https://github.com/leonidgrishenkov/liquibase-clickhouse-image
 # This repo only ever consumes it by tag - there is no build task here on purpose.
@@ -7,7 +19,6 @@ vars:
   IMAGE_NAME: liquibase-clickhouse
   IMAGE_TAG: 4.33.0-1
   COMPOSE: docker compose
-  LB: docker compose run --rm liquibase
   CH: docker exec clickhouse clickhouse-client --user liquibase --password liquibase
 
 tasks:
@@ -17,7 +28,7 @@ tasks:
     cmds:
       - task --list
 
-  # --- environment ----------------------------------------------------------
+  # --- environment ------------------------------------------------------------
   up:
     desc: Start ClickHouse and wait until it is healthy
     cmds:
@@ -61,185 +72,3 @@ tasks:
         {{.CH}} --query
         "SELECT create_table_query FROM system.tables
          WHERE database='analytics' ORDER BY name FORMAT TSVRaw"
-
-  # --- authoring -------------------------------------------------------------
-  new-migration:
-    desc: "Create a migration (NAME=create_foo CLUSTER=analytics_cluster DB=analytics)"
-    silent: true
-    summary: |
-      Creates migrations/changelog/clusters/<CLUSTER>/<DB>/sql/<timestamp>_<NAME>.sql
-      from a template that already carries the changeset header, the ON CLUSTER clause and
-      a --rollback line. The sql/ folder is picked up by includeAll, so no changelog
-      needs editing.
-
-      Example:
-        task new-migration NAME=create_orders CLUSTER=analytics_cluster DB=analytics
-    vars:
-      CLUSTER: '{{.CLUSTER | default "analytics_cluster"}}'
-      DB: '{{.DB | default "analytics"}}'
-      SLUG: '{{.NAME | default "" | lower | replace " " "_" | replace "-" "_"}}'
-      # UTC, so migration order does not depend on who generated the file.
-      TS:
-        sh: date -u +%Y%m%d%H%M%S
-      DIR: 'migrations/changelog/clusters/{{.CLUSTER}}/{{.DB}}/sql'
-      FILE: 'migrations/changelog/clusters/{{.CLUSTER}}/{{.DB}}/sql/{{.TS}}_{{.SLUG}}.sql'
-    preconditions:
-      - sh: '[ -n "{{.NAME}}" ]'
-        msg: 'NAME is required, e.g. task new-migration NAME=create_orders CLUSTER=analytics_cluster DB=analytics'
-      - sh: 'echo "{{.SLUG}}" | grep -qE "^[a-z0-9_]+$"'
-        msg: 'NAME must be snake_case (letters, digits, underscores) - got "{{.SLUG}}"'
-      - sh: '[ -d "migrations/changelog/clusters/{{.CLUSTER}}" ]'
-        msg: 'Unknown cluster "{{.CLUSTER}}". Existing: analytics_cluster, staging_cluster'
-      - sh: '[ -f "migrations/changelog/clusters/{{.CLUSTER}}/{{.DB}}/changelog.yaml" ]'
-        msg: 'Database "{{.DB}}" has no changelog.yaml under cluster "{{.CLUSTER}}"'
-    cmds:
-      - mkdir -p {{.DIR}}
-      - |
-        cat > {{.FILE}} <<'SQL'
-        --liquibase formatted sql
-
-        --changeset ${author_name}:{{.SLUG}}
-        --comment: TODO: describe this change
-        create table if not exists ${{"{"}}{{.DB}}}<table_name> on cluster {{.CLUSTER}}
-        (
-            -- columns here
-        )
-        engine = ReplicatedMergeTree(${sharded})
-        order by (<sort_key>);
-        --rollback drop table if exists ${{"{"}}{{.DB}}}<table_name> on cluster {{.CLUSTER}} sync;
-        SQL
-      - 'echo "created {{.FILE}}"'
-
-  lint:
-    desc: Check every migration against the repo conventions
-    summary: |
-      Enforces what Liquibase itself cannot: timestamped snake_case filenames, the
-      formatted-sql header, an explicit --rollback per changeset (use "--rollback empty"
-      when a change genuinely cannot be undone), ON CLUSTER matching the folder, and
-      IF [NOT] EXISTS guards on create/drop.
-    silent: true
-    cmds:
-      - |
-        fail=0
-        for f in $(find migrations/changelog/clusters -name '*.sql' | sort); do
-          base=$(basename "$f")
-          cluster=$(echo "$f" | cut -d/ -f4)
-          err() { echo "  $f: $1"; fail=1; }
-
-          echo "$base" | grep -qE '^[0-9]{14}_[a-z0-9_]+\.sql$' \
-            || err "filename must be <14-digit timestamp>_<snake_case>.sql"
-
-          head -1 "$f" | grep -qF -- '--liquibase formatted sql' \
-            || err "first line must be '--liquibase formatted sql'"
-
-          cs=$(grep -c -- '--changeset' "$f" || true)
-          rb=$(grep -c -- '--rollback' "$f" || true)
-          [ "$cs" -gt 0 ] || err "contains no changesets"
-          [ "$cs" -eq "$rb" ] \
-            || err "$cs changeset(s) but $rb --rollback line(s); every changeset needs one (use '--rollback empty' if irreversible)"
-
-          if grep -qiE '^[[:space:]]*(create|alter|drop|rename)[[:space:]]' "$f"; then
-            grep -qiE "on cluster ${cluster}" "$f" \
-              || err "DDL must carry 'on cluster ${cluster}' to match its folder"
-          fi
-
-          if grep -inE '^[[:space:]]*create (table|view|materialized view|dictionary)' "$f" \
-             | grep -viE 'if not exists|or replace' | grep -q .; then
-            err "create statements need IF NOT EXISTS"
-          fi
-
-          if grep -inE '^[[:space:]]*drop (table|view|dictionary|function)' "$f" \
-             | grep -viE 'if exists' | grep -q .; then
-            err "drop statements need IF EXISTS"
-          fi
-        done
-        n=$(find migrations/changelog/clusters -name '*.sql' | wc -l | tr -d ' ')
-        if [ "$fail" -eq 0 ]; then echo "ok: $n migration(s) pass"; else echo "FAILED"; exit 1; fi
-
-  # --- liquibase ------------------------------------------------------------
-  check-image:
-    internal: true
-    preconditions:
-      - sh: "docker image inspect {{.IMAGE_NAME}}:{{.IMAGE_TAG}} >/dev/null 2>&1"
-        msg: |
-          Image {{.IMAGE_NAME}}:{{.IMAGE_TAG}} not found locally.
-          It is built by the liquibase-clickhouse-image repo. Either:
-            docker pull {{.IMAGE_NAME}}:{{.IMAGE_TAG}}
-            or, in a checkout of that repo:  task build
-          To use a registry copy instead, set LIQUIBASE_IMAGE in .env (see .env.example).
-
-  status:
-    desc: Show which changesets are pending
-    deps: [up, check-image]
-    cmds:
-      - "{{.LB}} status"
-
-  update:
-    desc: Apply pending changesets
-    deps: [up, check-image]
-    cmds:
-      - "{{.LB}} update"
-
-  update-sql:
-    desc: Print the SQL `update` would run, without running it
-    deps: [up, check-image]
-    cmds:
-      - "{{.LB}} update-sql"
-
-  history:
-    desc: Show applied changesets from DATABASECHANGELOG
-    deps: [up, check-image]
-    cmds:
-      - "{{.LB}} history"
-
-  validate:
-    desc: Check the changelog for problems
-    deps: [up, check-image]
-    cmds:
-      - "{{.LB}} validate"
-
-  rollback:
-    desc: "Roll back the last changeset (override: task rollback N=3)"
-    deps: [up, check-image]
-    vars:
-      N: '{{.N | default 1}}'
-    cmds:
-      - "{{.LB}} rollback-count {{.N}}"
-
-  liquibase:
-    desc: Run an arbitrary Liquibase command (task liquibase -- tag v1)
-    deps: [up, check-image]
-    cmds:
-      - "{{.LB}} {{.CLI_ARGS}}"
-
-  # --- the "existing database" experiments ------------------------------------
-  generate-changelog:
-    desc: Reverse-engineer the existing schema into migrations/out/
-    summary: |
-      --diff-types is mandatory: the default snapshot queries
-      information_schema.constraints, which ClickHouse does not have.
-      See README for how lossy the output is.
-    deps: [up, check-image]
-    cmds:
-      - >-
-        {{.LB}} generate-changelog
-        --changelog-file=out/generated-schema.yaml
-        --overwrite-output-file=true
-        --diff-types=tables,columns
-
-  sync-baseline:
-    desc: Mark every changeset as already applied, without running it
-    deps: [up, check-image]
-    cmds:
-      - "{{.LB}} changelog-sync"
-
-  demo-cluster-mode:
-    desc: Run with the extension's cluster settings enabled (known broken - see README)
-    deps: [up, check-image]
-    cmds:
-      - cmd: >-
-          {{.COMPOSE}} run --rm
-          -v "$PWD/migrations/liquibaseClickhouse.conf:/liquibase/lib/liquibaseClickhouse.conf:ro"
-          liquibase update
-        ignore_error: true
-
