@@ -9,31 +9,29 @@ databaseChangeLog:
   - property: {name: personal_prefix, value: ""}
 
   # ReplicatedMergeTree ZooKeeper path + replica name. `{shard}` / `{replica}` are
-  # ClickHouse macros (see clickhouse/config.d/02-clusters.xml), not Liquibase ones.
+  # ClickHouse macros (see clickhouse/macros/*.xml), not Liquibase ones.
   - property:
       name: sharded
       value: "'/clickhouse/tables/{shard}/{database}/{table}', '{replica}'"
   - property:
       name: sharded_uuid
       value: "'/clickhouse/tables/{shard}/{database}/{uuid}', '{replica}'"
+  # Broadcast: every shard shares one ZK path, so the table is one cluster-wide copy
+  # rather than a per-shard slice. {replica_broadcast} is unique across the cluster.
+  - property:
+      name: broadcast
+      value: "'/clickhouse/tables/{shard_broadcast}/{database}/{table}', '{replica_broadcast}'"
 
-  # Database shorthands: ${analytics}events -> analytics.events
-  # analytics_cluster
+  # Database shorthands on analytics_cluster: ${stage}events -> stage.events
   - property: {name: stage_schema, value: stage}
   - property: {name: stage, value: "${stage_schema}.${personal_prefix}"}
   - property: {name: bi_schema, value: bi}
   - property: {name: bi, value: "${bi_schema}.${personal_prefix}"}
   - property: {name: marts_schema, value: marts}
   - property: {name: marts, value: "${marts_schema}.${personal_prefix}"}
-  # staging_cluster. Note `staging` (a database on staging_cluster) is a different
-  # thing from `stage` (a database on analytics_cluster).
-  - property: {name: staging_schema, value: staging}
-  - property: {name: staging, value: "${staging_schema}.${personal_prefix}"}
 
   # ---------------------------------------------------------------------------
   # One include per logical cluster.
   # ---------------------------------------------------------------------------
   - include:
       file: changelog/clusters/analytics_cluster/changelog.yaml
-  - include:
-      file: changelog/clusters/staging_cluster/changelog.yaml

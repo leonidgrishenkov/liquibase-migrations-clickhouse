@@ -19,7 +19,7 @@ vars:
   IMAGE_NAME: liquibase-clickhouse
   IMAGE_TAG: 4.33.0-1
   COMPOSE: docker compose
-  CH: docker exec clickhouse clickhouse-client --user liquibase --password liquibase
+  CH: docker exec ch-s1r1 clickhouse-client --user liquibase --password liquibase
 
 tasks:
   default:
@@ -30,9 +30,14 @@ tasks:
 
   # --- environment ------------------------------------------------------------
   up:
-    desc: Start ClickHouse and wait until it is healthy
+    desc: Start the cluster and wait until it is bootstrapped
     cmds:
-      - "{{.COMPOSE}} up -d --wait clickhouse"
+      # --wait returns once containers are healthy/running, which for a one-shot
+      # service means it does NOT wait for bootstrap to finish. `compose wait` blocks
+      # until it actually exits, so the databases and seed data are guaranteed to be
+      # in place when this task returns.
+      - "{{.COMPOSE}} up -d --wait"
+      - "{{.COMPOSE}} wait bootstrap >/dev/null"
 
   down:
     desc: Stop containers, keep the data volume
@@ -46,15 +51,15 @@ tasks:
       - "{{.COMPOSE}} down -v"
 
   logs:
-    desc: Tail ClickHouse logs
+    desc: Tail logs from all four ClickHouse nodes
     cmds:
-      - "{{.COMPOSE}} logs -f clickhouse"
+      - "{{.COMPOSE}} logs -f ch-s1r1 ch-s1r2 ch-s2r1 ch-s2r2"
 
   ch:
-    desc: Interactive clickhouse-client
+    desc: Interactive clickhouse-client on ch-s1r1
     interactive: true
     cmds:
-      - docker exec -it clickhouse clickhouse-client --user liquibase --password liquibase
+      - docker exec -it ch-s1r1 clickhouse-client --user liquibase --password liquibase
 
   tables:
     desc: List tables in every migrated database
@@ -62,7 +67,7 @@ tasks:
       - >-
         {{.CH}} --query
         "SELECT database, name, engine FROM system.tables
-         WHERE database IN ('bi','marts','stage','staging')
+         WHERE database IN ('bi','marts','stage')
          ORDER BY database, name FORMAT PrettyCompact"
 
   ddl:
@@ -71,4 +76,4 @@ tasks:
       - >-
         {{.CH}} --query
         "SELECT create_table_query FROM system.tables
-         WHERE database IN ('bi','marts','stage','staging') ORDER BY database, name FORMAT TSVRaw"
+         WHERE database IN ('bi','marts','stage') ORDER BY database, name FORMAT TSVRaw"

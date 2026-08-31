@@ -6,10 +6,10 @@
 -- thing that controls where these tables land (liquibaseCatalogName /
 -- liquibaseSchemaName hang against ClickHouse -- see README). Keep this in sync with
 -- `url:` in migrations/liquibase.properties.
-CREATE DATABASE IF NOT EXISTS liquibase;
+CREATE DATABASE IF NOT EXISTS liquibase ON CLUSTER analytics_cluster;
 
--- Databases on analytics_cluster that the migrations target. Each has a matching
--- folder under migrations/changelog/clusters/analytics_cluster/.
+-- Databases the migrations target. Each has a matching folder under
+-- migrations/changelog/clusters/analytics_cluster/.
+CREATE DATABASE IF NOT EXISTS stage ON CLUSTER analytics_cluster;
 CREATE DATABASE IF NOT EXISTS bi    ON CLUSTER analytics_cluster;
 CREATE DATABASE IF NOT EXISTS marts ON CLUSTER analytics_cluster;
-CREATE DATABASE IF NOT EXISTS stage ON CLUSTER analytics_cluster;

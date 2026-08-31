@@ -1,0 +1,11 @@
+<clickhouse>
+    <macros>
+        <!-- {replica} only has to be unique within its shard. -->
+        <shard>02</shard>
+        <replica>s2r1</replica>
+        <!-- Broadcast tables put every shard on ONE ZooKeeper path, so this replica
+             name has to be unique across the whole cluster. -->
+        <shard_broadcast>broadcast</shard_broadcast>
+        <replica_broadcast>s2r1</replica_broadcast>
+    </macros>
+</clickhouse>

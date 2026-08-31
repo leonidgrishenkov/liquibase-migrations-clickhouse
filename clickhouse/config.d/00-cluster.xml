@@ -1,0 +1,50 @@
+<clickhouse>
+    <!-- Shared by all four server nodes. Per-node identity (macros) is mounted
+         separately from clickhouse/macros/<node>.xml -->
+
+    <zookeeper>
+        <node>
+            <host>keeper</host>
+            <port>9181</port>
+        </node>
+    </zookeeper>
+
+    <distributed_ddl>
+        <path>/clickhouse/task_queue/ddl</path>
+    </distributed_ddl>
+
+    <!-- 2 shards x 2 replicas.
+         internal_replication=true: an INSERT into a Distributed table is written to ONE
+         replica per shard and ClickHouse replicates it from there. With false, the
+         Distributed table would write to every replica itself and ReplicatedMergeTree
+         would then dedup-fight with it. -->
+    <remote_servers replace="true">
+        <analytics_cluster>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica>
+                    <host>ch-s1r1</host><port>9000</port>
+                    <user>liquibase</user><password>liquibase</password>
+                </replica>
+                <replica>
+                    <host>ch-s1r2</host><port>9000</port>
+                    <user>liquibase</user><password>liquibase</password>
+                </replica>
+            </shard>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica>
+                    <host>ch-s2r1</host><port>9000</port>
+                    <user>liquibase</user><password>liquibase</password>
+                </replica>
+                <replica>
+                    <host>ch-s2r2</host><port>9000</port>
+                    <user>liquibase</user><password>liquibase</password>
+                </replica>
+            </shard>
+        </analytics_cluster>
+    </remote_servers>
+
+    <!-- Four servers on one laptop: keep each one modest. -->
+    <max_server_memory_usage_to_ram_ratio>0.2</max_server_memory_usage_to_ram_ratio>
+</clickhouse>
